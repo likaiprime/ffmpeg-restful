@@ -56,6 +56,42 @@ GET /
 ```
 获取 API 基本信息和使用说明
 
+### 🟢 健康检查 (绿灯测试)
+```http
+GET /health
+```
+用于监控系统的健康检查端点，返回服务状态和系统信息。
+
+**响应示例:**
+```json
+{
+  "status": "OK",
+  "timestamp": "2025-07-24T17:02:37.079Z",
+  "uptime": 6.912901337,
+  "service": "FFmpeg RESTful API",
+  "version": "1.2.0",
+  "environment": "development",
+  "memory": {
+    "used": 11,
+    "total": 17,
+    "external": 1
+  },
+  "system": {
+    "platform": "linux",
+    "arch": "arm64",
+    "nodeVersion": "v18.20.8"
+  },
+  "ffmpeg": {
+    "available": true,
+    "formatsCount": 410
+  }
+}
+```
+
+**状态码:**
+- `200 OK`: 服务健康
+- `503 Service Unavailable`: FFmpeg 不可用或其他错误
+
 ### 📋 媒体信息
 ```http
 POST /info
@@ -64,23 +100,105 @@ Content-Type: multipart/form-data
 file: <媒体文件>
 ```
 
-**响应示例:**
+**完整响应示例:**
 ```json
 {
-  "streams": [{
-    "codec_name": "h264",
-    "width": 1280,
-    "height": 720,
-    "duration": 8,
-    "bit_rate": 2655964
-  }],
+  "streams": [
+    {
+      "index": 0,
+      "codec_name": "h264",
+      "codec_long_name": "H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10",
+      "profile": "High",
+      "codec_type": "video",
+      "codec_tag_string": "avc1",
+      "width": 1280,
+      "height": 720,
+      "coded_width": 1280,
+      "coded_height": 720,
+      "has_b_frames": 2,
+      "pix_fmt": "yuv420p",
+      "level": 31,
+      "color_range": "unknown",
+      "color_space": "unknown",
+      "field_order": "progressive",
+      "r_frame_rate": "24/1",
+      "avg_frame_rate": "24/1",
+      "time_base": "1/12288",
+      "start_time": 0,
+      "duration": 8,
+      "bit_rate": 2655964,
+      "nb_frames": 192,
+      "tags": {
+        "language": "und",
+        "handler_name": "VideoHandler"
+      },
+      "disposition": {
+        "default": 1,
+        "dub": 0,
+        "original": 0
+      }
+    }
+  ],
   "format": {
+    "filename": "uploads/temp-file.mp4",
+    "nb_streams": 1,
     "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+    "format_long_name": "QuickTime / MOV",
+    "start_time": 0,
     "duration": 8,
-    "size": 2659080
-  }
+    "size": 2659080,
+    "bit_rate": 2659080,
+    "probe_score": 100,
+    "tags": {
+      "major_brand": "isom",
+      "minor_version": "512",
+      "compatible_brands": "isomiso2avc1mp41",
+      "encoder": "Google"
+    }
+  },
+  "chapters": []
 }
 ```
+
+**响应字段详解:**
+
+#### 📺 Streams (流信息)
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `index` | number | 流索引号 |
+| `codec_name` | string | 编解码器名称 (h264, aac, mp3等) |
+| `codec_long_name` | string | 编解码器完整名称 |
+| `codec_type` | string | 流类型 (video/audio/subtitle) |
+| `width` / `height` | number | 视频分辨率 |
+| `r_frame_rate` | string | 实际帧率 |
+| `avg_frame_rate` | string | 平均帧率 |
+| `duration` | number | 流时长（秒） |
+| `bit_rate` | number | 比特率 |
+| `nb_frames` | number | 总帧数 |
+| `pix_fmt` | string | 像素格式 (yuv420p等) |
+| `profile` | string | 编码档次 (High, Main, Baseline) |
+| `level` | number | 编码级别 |
+
+#### 📁 Format (容器信息)
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `format_name` | string | 容器格式简称 |
+| `format_long_name` | string | 容器格式全名 |
+| `duration` | number | 总时长（秒） |
+| `size` | number | 文件大小（字节） |
+| `bit_rate` | number | 总比特率 |
+| `nb_streams` | number | 流的数量 |
+| `tags` | object | 元数据标签 |
+
+#### 🏷️ Tags (元数据)
+| 字段 | 说明 |
+|------|------|
+| `major_brand` | 主要品牌标识 |
+| `encoder` | 编码器信息 |
+| `title` | 标题 |
+| `artist` | 艺术家 |
+| `album` | 专辑 |
+| `date` | 创建日期 |
 
 ### 🔄 格式转换
 ```http
