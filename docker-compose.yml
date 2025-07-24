@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  ffmpeg-api:
+    build: .
+    container_name: ffmpeg-restful-api
+    ports:
+      - "${PORT:-42162}:42162"
+    environment:
+      - NODE_ENV=production
+      - PORT=42162
+    volumes:
+      - uploads_data:/app/uploads
+      - outputs_data:/app/outputs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:42162/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+volumes:
+  uploads_data:
+    driver: local
+  outputs_data:
+    driver: local
