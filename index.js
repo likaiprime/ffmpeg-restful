@@ -40,9 +40,14 @@ app.get('/', (req, res) => {
     message: 'FFmpeg RESTful API',
     endpoints: {
       'GET /': 'API information',
-      'POST /convert': 'Convert media file',
+      'POST /convert': 'Convert media file (supports format parameter)',
       'POST /info': 'Get media file information',
-      'POST /random-screenshot': 'Generate random screenshot from video'
+      'POST /random-screenshot': 'Generate random screenshot from video (supports format: jpg, jpeg, png, webp, avif)'
+    },
+    examples: {
+      convert: 'curl -X POST -F "file=@video.mp4" -F "format=webm" /convert',
+      screenshot: 'curl -X POST -F "file=@video.mp4" -F "format=avif" /random-screenshot',
+      info: 'curl -X POST -F "file=@video.mp4" /info'
     }
   });
 });
@@ -104,6 +109,17 @@ app.post('/random-screenshot', upload.single('file'), (req, res) => {
     return res.status(400).json({ error: 'No file uploaded' });
   }
 
+  // Get format parameter (default to jpg)
+  const format = req.body.format || 'jpg';
+  const supportedFormats = ['jpg', 'jpeg', 'png', 'webp', 'avif'];
+  
+  if (!supportedFormats.includes(format.toLowerCase())) {
+    fs.unlinkSync(req.file.path);
+    return res.status(400).json({ 
+      error: `Unsupported format: ${format}. Supported formats: ${supportedFormats.join(', ')}` 
+    });
+  }
+
   // First, get video duration
   ffmpeg.ffprobe(req.file.path, (err, metadata) => {
     if (err) {
@@ -119,13 +135,32 @@ app.post('/random-screenshot', upload.single('file'), (req, res) => {
 
     // Generate random timestamp (not at the very beginning or end)
     const randomTime = Math.random() * (duration - 1) + 0.5;
-    const outputFileName = `${Date.now()}-screenshot.jpg`;
+    const outputFileName = `${Date.now()}-screenshot.${format}`;
     const outputPath = path.join(outputDir, outputFileName);
 
-    // Extract frame at random timestamp
-    ffmpeg(req.file.path)
+    // Create ffmpeg command
+    let command = ffmpeg(req.file.path)
       .seekInput(randomTime)
-      .frames(1)
+      .frames(1);
+
+    // Set format-specific options
+    if (format.toLowerCase() === 'avif') {
+      command = command
+        .outputOptions([
+          '-c:v', 'libaom-av1',
+          '-crf', '30',
+          '-cpu-used', '8'
+        ]);
+    } else if (format.toLowerCase() === 'webp') {
+      command = command
+        .outputOptions([
+          '-c:v', 'libwebp',
+          '-quality', '80'
+        ]);
+    }
+
+    // Extract frame at random timestamp
+    command
       .output(outputPath)
       .on('end', () => {
         // Clean up uploaded file
