@@ -12,6 +12,38 @@ const PORT = process.env.PORT || 42162;
 app.use(cors());
 app.use(express.json());
 
+// Request logging middleware
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  const method = req.method;
+  const url = req.url;
+  const userAgent = req.get('User-Agent') || 'Unknown';
+  const clientIP = req.ip || req.connection.remoteAddress || 'Unknown';
+  
+  // Log request start
+  console.log(`[${timestamp}] ${method} ${url} - IP: ${clientIP} - User-Agent: ${userAgent}`);
+  
+  // Log file upload info if present
+  if (req.files || (req.file && req.route)) {
+    console.log(`[${timestamp}] File upload detected on ${url}`);
+  }
+
+  // Capture response details
+  const originalSend = res.send;
+  res.send = function(data) {
+    const responseTime = Date.now() - req.startTime;
+    const statusCode = res.statusCode;
+    const contentLength = data ? Buffer.byteLength(data, 'utf8') : 0;
+    
+    console.log(`[${timestamp}] ${method} ${url} - ${statusCode} - ${contentLength} bytes - ${responseTime}ms`);
+    
+    originalSend.call(this, data);
+  };
+
+  req.startTime = Date.now();
+  next();
+});
+
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -98,17 +130,27 @@ app.get('/health', (req, res) => {
 
 // Get media file information
 app.post('/info', upload.single('file'), (req, res) => {
+  const timestamp = new Date().toISOString();
+  
   if (!req.file) {
+    console.log(`[${timestamp}] INFO request failed: No file uploaded`);
     return res.status(400).json({ error: 'No file uploaded' });
   }
+
+  console.log(`[${timestamp}] Processing INFO request - File: ${req.file.originalname} (${req.file.size} bytes)`);
 
   ffmpeg.ffprobe(req.file.path, (err, metadata) => {
     // Clean up uploaded file
     fs.unlinkSync(req.file.path);
     
     if (err) {
+      console.log(`[${timestamp}] INFO request failed: ${err.message}`);
       return res.status(500).json({ error: err.message });
     }
+    
+    const duration = metadata.format?.duration || 0;
+    const streams = metadata.streams?.length || 0;
+    console.log(`[${timestamp}] INFO request completed - Duration: ${duration}s, Streams: ${streams}`);
     
     res.json(metadata);
   });
@@ -116,7 +158,10 @@ app.post('/info', upload.single('file'), (req, res) => {
 
 // Convert media file
 app.post('/convert', upload.single('file'), (req, res) => {
+  const timestamp = new Date().toISOString();
+  
   if (!req.file) {
+    console.log(`[${timestamp}] CONVERT request failed: No file uploaded`);
     return res.status(400).json({ error: 'No file uploaded' });
   }
 
@@ -124,16 +169,29 @@ app.post('/convert', upload.single('file'), (req, res) => {
   const outputFileName = `${Date.now()}-output.${format}`;
   const outputPath = path.join(outputDir, outputFileName);
 
+  console.log(`[${timestamp}] Processing CONVERT request - File: ${req.file.originalname} (${req.file.size} bytes) -> ${format}`);
+
   ffmpeg(req.file.path)
     .toFormat(format)
+    .on('start', (commandLine) => {
+      console.log(`[${timestamp}] FFmpeg conversion started: ${commandLine}`);
+    })
+    .on('progress', (progress) => {
+      if (progress.percent) {
+        console.log(`[${timestamp}] Conversion progress: ${Math.round(progress.percent)}%`);
+      }
+    })
     .on('end', () => {
       // Clean up uploaded file
       fs.unlinkSync(req.file.path);
       
+      const outputStats = fs.statSync(outputPath);
+      console.log(`[${timestamp}] CONVERT request completed - Output: ${outputStats.size} bytes`);
+      
       // Send the converted file
       res.download(outputPath, (err) => {
         if (err) {
-          console.error('Download error:', err);
+          console.error(`[${timestamp}] Download error:`, err);
         }
         // Clean up output file after download
         fs.unlinkSync(outputPath);
@@ -142,6 +200,7 @@ app.post('/convert', upload.single('file'), (req, res) => {
     .on('error', (err) => {
       // Clean up uploaded file
       fs.unlinkSync(req.file.path);
+      console.log(`[${timestamp}] CONVERT request failed: ${err.message}`);
       res.status(500).json({ error: err.message });
     })
     .save(outputPath);
@@ -149,7 +208,10 @@ app.post('/convert', upload.single('file'), (req, res) => {
 
 // Generate random screenshot from video
 app.post('/random-screenshot', upload.single('file'), (req, res) => {
+  const timestamp = new Date().toISOString();
+  
   if (!req.file) {
+    console.log(`[${timestamp}] SCREENSHOT request failed: No file uploaded`);
     return res.status(400).json({ error: 'No file uploaded' });
   }
 
@@ -157,8 +219,11 @@ app.post('/random-screenshot', upload.single('file'), (req, res) => {
   const format = req.body.format || 'jpg';
   const supportedFormats = ['jpg', 'jpeg', 'png', 'webp', 'avif'];
   
+  console.log(`[${timestamp}] Processing SCREENSHOT request - File: ${req.file.originalname} (${req.file.size} bytes) -> ${format}`);
+  
   if (!supportedFormats.includes(format.toLowerCase())) {
     fs.unlinkSync(req.file.path);
+    console.log(`[${timestamp}] SCREENSHOT request failed: Unsupported format ${format}`);
     return res.status(400).json({ 
       error: `Unsupported format: ${format}. Supported formats: ${supportedFormats.join(', ')}` 
     });
@@ -168,12 +233,14 @@ app.post('/random-screenshot', upload.single('file'), (req, res) => {
   ffmpeg.ffprobe(req.file.path, (err, metadata) => {
     if (err) {
       fs.unlinkSync(req.file.path);
+      console.log(`[${timestamp}] SCREENSHOT request failed: ${err.message}`);
       return res.status(500).json({ error: 'Failed to get video metadata: ' + err.message });
     }
 
     const duration = metadata.format.duration;
     if (!duration || duration <= 0) {
       fs.unlinkSync(req.file.path);
+      console.log(`[${timestamp}] SCREENSHOT request failed: Invalid video duration`);
       return res.status(400).json({ error: 'Invalid video duration' });
     }
 
@@ -181,6 +248,8 @@ app.post('/random-screenshot', upload.single('file'), (req, res) => {
     const randomTime = Math.random() * (duration - 1) + 0.5;
     const outputFileName = `${Date.now()}-screenshot.${format}`;
     const outputPath = path.join(outputDir, outputFileName);
+    
+    console.log(`[${timestamp}] Generating screenshot at ${randomTime.toFixed(2)}s from ${duration}s video`);
 
     // Create ffmpeg command
     let command = ffmpeg(req.file.path)
@@ -206,14 +275,20 @@ app.post('/random-screenshot', upload.single('file'), (req, res) => {
     // Extract frame at random timestamp
     command
       .output(outputPath)
+      .on('start', (commandLine) => {
+        console.log(`[${timestamp}] FFmpeg screenshot started: ${commandLine}`);
+      })
       .on('end', () => {
         // Clean up uploaded file
         fs.unlinkSync(req.file.path);
         
+        const outputStats = fs.statSync(outputPath);
+        console.log(`[${timestamp}] SCREENSHOT request completed - Output: ${outputStats.size} bytes (${format})`);
+        
         // Send the screenshot
         res.download(outputPath, (err) => {
           if (err) {
-            console.error('Download error:', err);
+            console.error(`[${timestamp}] Download error:`, err);
           }
           // Clean up output file after download
           fs.unlinkSync(outputPath);
@@ -222,6 +297,7 @@ app.post('/random-screenshot', upload.single('file'), (req, res) => {
       .on('error', (err) => {
         // Clean up uploaded file
         fs.unlinkSync(req.file.path);
+        console.log(`[${timestamp}] SCREENSHOT request failed: ${err.message}`);
         res.status(500).json({ error: 'Failed to generate screenshot: ' + err.message });
       })
       .run();
@@ -230,5 +306,15 @@ app.post('/random-screenshot', upload.single('file'), (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`FFmpeg RESTful API running on http://localhost:${PORT}`);
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ==========================================`);
+  console.log(`[${timestamp}] 🚀 FFmpeg RESTful API Server Started`);
+  console.log(`[${timestamp}] 📍 Port: ${PORT}`);
+  console.log(`[${timestamp}] 🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`[${timestamp}] 📊 Node.js: ${process.version}`);
+  console.log(`[${timestamp}] 🖥️  Platform: ${process.platform} ${process.arch}`);
+  console.log(`[${timestamp}] 💾 Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)} MB`);
+  console.log(`[${timestamp}] 🔗 Health Check: http://localhost:${PORT}/health`);
+  console.log(`[${timestamp}] 📚 Documentation: http://localhost:${PORT}/`);
+  console.log(`[${timestamp}] ==========================================`);
 });
