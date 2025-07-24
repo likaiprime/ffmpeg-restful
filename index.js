@@ -40,6 +40,7 @@ app.get('/', (req, res) => {
     message: 'FFmpeg RESTful API',
     endpoints: {
       'GET /': 'API information',
+      'GET /health': 'Health check endpoint',
       'POST /convert': 'Convert media file (supports format parameter)',
       'POST /info': 'Get media file information',
       'POST /random-screenshot': 'Generate random screenshot from video (supports format: jpg, jpeg, png, webp, avif)'
@@ -49,6 +50,49 @@ app.get('/', (req, res) => {
       screenshot: 'curl -X POST -F "file=@video.mp4" -F "format=avif" /random-screenshot',
       info: 'curl -X POST -F "file=@video.mp4" /info'
     }
+  });
+});
+
+// Health check endpoint (绿灯测试)
+app.get('/health', (req, res) => {
+  const healthCheck = {
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    service: 'FFmpeg RESTful API',
+    version: '1.2.0',
+    environment: process.env.NODE_ENV || 'development',
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+      external: Math.round(process.memoryUsage().external / 1024 / 1024)
+    },
+    system: {
+      platform: process.platform,
+      arch: process.arch,
+      nodeVersion: process.version
+    }
+  };
+
+  // 检查 FFmpeg 是否可用
+  const ffmpeg = require('fluent-ffmpeg');
+  
+  ffmpeg.getAvailableFormats((err, formats) => {
+    if (err) {
+      healthCheck.status = 'ERROR';
+      healthCheck.ffmpeg = {
+        available: false,
+        error: err.message
+      };
+      return res.status(503).json(healthCheck);
+    }
+    
+    healthCheck.ffmpeg = {
+      available: true,
+      formatsCount: Object.keys(formats).length
+    };
+    
+    res.status(200).json(healthCheck);
   });
 });
 
