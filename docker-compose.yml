@@ -14,7 +14,8 @@ services:
     volumes:
       - uploads_data:/app/uploads
       - outputs_data:/app/outputs
-    networks: dokploy-network
+    networks:
+      - dokploy-network
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:42162/"]
