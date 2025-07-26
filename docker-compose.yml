@@ -1,4 +1,4 @@
-version: '3.8'
+
 
 services:
   ffmpeg-api:
@@ -6,12 +6,15 @@ services:
     container_name: ffmpeg-restful-api
     ports:
       - "${PORT:-42162}:42162"
+    expose:
+      - "42162"
     environment:
       - NODE_ENV=production
       - PORT=42162
     volumes:
       - uploads_data:/app/uploads
       - outputs_data:/app/outputs
+    networks: dokploy-network
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:42162/"]
@@ -33,3 +36,8 @@ volumes:
     driver: local
   outputs_data:
     driver: local
+
+networks:
+  dokploy-network:
+    driver: bridge
+    external: true
