@@ -30,6 +30,8 @@ app.use((req, res, next) => {
 
   // Capture response details
   const originalSend = res.send;
+  const originalDownload = res.download;
+  
   res.send = function(data) {
     const responseTime = Date.now() - req.startTime;
     const statusCode = res.statusCode;
@@ -38,6 +40,13 @@ app.use((req, res, next) => {
     console.log(`[${timestamp}] ${method} ${url} - ${statusCode} - ${contentLength} bytes - ${responseTime}ms`);
     
     originalSend.call(this, data);
+  };
+  
+  res.download = function(path, callback) {
+    const responseTime = Date.now() - req.startTime;
+    console.log(`[${timestamp}] ${method} ${url} - File download started - Total processing time: ${responseTime}ms`);
+    
+    originalDownload.call(this, path, callback);
   };
 
   req.startTime = Date.now();
@@ -75,12 +84,14 @@ app.get('/', (req, res) => {
       'GET /health': 'Health check endpoint',
       'POST /convert': 'Convert media file (supports format parameter)',
       'POST /info': 'Get media file information',
-      'POST /random-screenshot': 'Generate random screenshot from video (supports format: jpg, jpeg, png, webp, avif)'
+      'POST /random-screenshot': 'Generate random screenshot from video (supports format: jpg, jpeg, png, webp, avif)',
+      'POST /remove-letterbox': 'Remove black bars (letterbox/pillarbox) from video'
     },
     examples: {
       convert: 'curl -X POST -F "file=@video.mp4" -F "format=webm" /convert',
       screenshot: 'curl -X POST -F "file=@video.mp4" -F "format=avif" /random-screenshot',
-      info: 'curl -X POST -F "file=@video.mp4" /info'
+      info: 'curl -X POST -F "file=@video.mp4" /info',
+      'remove-letterbox': 'curl -X POST -F "file=@video.mp4" /remove-letterbox'
     }
   });
 });
@@ -159,6 +170,7 @@ app.post('/info', upload.single('file'), (req, res) => {
 // Convert media file
 app.post('/convert', upload.single('file'), (req, res) => {
   const timestamp = new Date().toISOString();
+  const processStartTime = Date.now();
   
   if (!req.file) {
     console.log(`[${timestamp}] CONVERT request failed: No file uploaded`);
@@ -178,15 +190,18 @@ app.post('/convert', upload.single('file'), (req, res) => {
     })
     .on('progress', (progress) => {
       if (progress.percent) {
-        console.log(`[${timestamp}] Conversion progress: ${Math.round(progress.percent)}%`);
+        const elapsed = ((Date.now() - processStartTime) / 1000).toFixed(1);
+        console.log(`[${timestamp}] Conversion progress: ${Math.round(progress.percent)}% - Elapsed: ${elapsed}s`);
       }
     })
     .on('end', () => {
       // Clean up uploaded file
       fs.unlinkSync(req.file.path);
       
+      const totalProcessTime = ((Date.now() - processStartTime) / 1000).toFixed(1);
       const outputStats = fs.statSync(outputPath);
       console.log(`[${timestamp}] CONVERT request completed - Output: ${outputStats.size} bytes`);
+      console.log(`[${timestamp}] Total conversion time: ${totalProcessTime}s`);
       
       // Send the converted file
       res.download(outputPath, (err) => {
@@ -299,6 +314,129 @@ app.post('/random-screenshot', upload.single('file'), (req, res) => {
         fs.unlinkSync(req.file.path);
         console.log(`[${timestamp}] SCREENSHOT request failed: ${err.message}`);
         res.status(500).json({ error: 'Failed to generate screenshot: ' + err.message });
+      })
+      .run();
+  });
+});
+
+// Remove black bars (letterbox/pillarbox) from video
+app.post('/remove-letterbox', upload.single('file'), (req, res) => {
+  const timestamp = new Date().toISOString();
+  const processStartTime = Date.now();
+  
+  if (!req.file) {
+    console.log(`[${timestamp}] REMOVE-LETTERBOX request failed: No file uploaded`);
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  const { format = 'mp4' } = req.body;
+  const outputFileName = `${Date.now()}-letterbox-removed.${format}`;
+  const outputPath = path.join(outputDir, outputFileName);
+
+  console.log(`[${timestamp}] Processing REMOVE-LETTERBOX request - File: ${req.file.originalname} (${req.file.size} bytes) -> ${format}`);
+
+  // Use ffprobe to analyze and detect crop parameters more reliably
+  ffmpeg.ffprobe(req.file.path, (err, metadata) => {
+    if (err) {
+      fs.unlinkSync(req.file.path);
+      console.log(`[${timestamp}] REMOVE-LETTERBOX probe failed: ${err.message}`);
+      return res.status(500).json({ error: 'Failed to analyze video: ' + err.message });
+    }
+
+    // Run cropdetect to find optimal crop parameters
+    const tempOutput = `/tmp/cropdetect_${Date.now()}.log`;
+    
+    ffmpeg(req.file.path)
+      .videoFilters('cropdetect=24:16:0')
+      .format('null')
+      .output('-')
+      .on('start', (commandLine) => {
+        console.log(`[${timestamp}] FFmpeg cropdetect started: ${commandLine}`);
+      })
+      .on('stderr', (stderrLine) => {
+        // Collect all crop detection results
+        if (stderrLine.includes('crop=')) {
+          fs.appendFileSync(tempOutput, stderrLine + '\n');
+        }
+      })
+      .on('end', () => {
+        try {
+          // Read and analyze crop detection results
+          const cropLog = fs.readFileSync(tempOutput, 'utf8');
+          const cropMatches = cropLog.match(/crop=(\d+):(\d+):(\d+):(\d+)/g);
+          
+          if (cropMatches && cropMatches.length > 0) {
+            // Get the most common crop parameters (last few should be stable)
+            const lastCrop = cropMatches[cropMatches.length - 1];
+            const [, width, height, x, y] = lastCrop.match(/crop=(\d+):(\d+):(\d+):(\d+)/);
+            
+            console.log(`[${timestamp}] Detected crop parameters: ${width}:${height}:${x}:${y}`);
+            
+            // Apply the crop filter to remove black bars
+            const cropStartTime = Date.now();
+            console.log(`[${timestamp}] Starting crop processing with parameters: ${width}:${height}:${x}:${y}`);
+            
+            ffmpeg(req.file.path)
+              .videoFilters(`crop=${width}:${height}:${x}:${y}`)
+              .toFormat(format)
+              .on('start', (commandLine) => {
+                console.log(`[${timestamp}] FFmpeg black bar removal started: ${commandLine}`);
+              })
+              .on('progress', (progress) => {
+                if (progress.percent) {
+                  const elapsed = ((Date.now() - cropStartTime) / 1000).toFixed(1);
+                  console.log(`[${timestamp}] Black bar removal progress: ${Math.round(progress.percent)}% - Elapsed: ${elapsed}s`);
+                }
+              })
+              .on('end', () => {
+                // Clean up files
+                fs.unlinkSync(req.file.path);
+                if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+                
+                const totalProcessTime = ((Date.now() - processStartTime) / 1000).toFixed(1);
+                const cropProcessTime = ((Date.now() - cropStartTime) / 1000).toFixed(1);
+                const outputStats = fs.statSync(outputPath);
+                
+                console.log(`[${timestamp}] REMOVE-LETTERBOX request completed - Output: ${outputStats.size} bytes`);
+                console.log(`[${timestamp}] Processing times - Crop: ${cropProcessTime}s, Total: ${totalProcessTime}s`);
+                
+                // Send the processed file
+                res.download(outputPath, (err) => {
+                  if (err) {
+                    console.error(`[${timestamp}] Download error:`, err);
+                  }
+                  // Clean up output file after download
+                  fs.unlinkSync(outputPath);
+                });
+              })
+              .on('error', (err) => {
+                // Clean up files
+                fs.unlinkSync(req.file.path);
+                if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+                console.log(`[${timestamp}] REMOVE-LETTERBOX request failed: ${err.message}`);
+                res.status(500).json({ error: err.message });
+              })
+              .save(outputPath);
+          } else {
+            // No crop needed or detection failed
+            fs.unlinkSync(req.file.path);
+            if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+            console.log(`[${timestamp}] No black bars detected in video`);
+            res.status(400).json({ error: 'No black bars detected in the video' });
+          }
+        } catch (readError) {
+          fs.unlinkSync(req.file.path);
+          if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+          console.log(`[${timestamp}] REMOVE-LETTERBOX analysis failed: ${readError.message}`);
+          res.status(500).json({ error: 'Failed to analyze crop detection results' });
+        }
+      })
+      .on('error', (err) => {
+        // Clean up files
+        fs.unlinkSync(req.file.path);
+        if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+        console.log(`[${timestamp}] REMOVE-LETTERBOX detection failed: ${err.message}`);
+        res.status(500).json({ error: 'Failed to detect black bars: ' + err.message });
       })
       .run();
   });
