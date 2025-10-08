@@ -84,6 +84,7 @@ app.get('/', (req, res) => {
       'GET /health': 'Health check endpoint',
       'POST /convert': 'Convert media file (supports format parameter)',
       'POST /info': 'Get media file information',
+      'POST /probe': 'Get complete media metadata via ffprobe (supports URL parameter)',
       'POST /random-screenshot': 'Generate random screenshot from video (supports format: jpg, jpeg, png, webp, avif)',
       'POST /remove-letterbox': 'Remove black bars (letterbox/pillarbox) from video'
     },
@@ -91,6 +92,7 @@ app.get('/', (req, res) => {
       convert: 'curl -X POST -F "file=@video.mp4" -F "format=webm" /convert',
       screenshot: 'curl -X POST -F "file=@video.mp4" -F "format=avif" /random-screenshot',
       info: 'curl -X POST -F "file=@video.mp4" /info',
+      probe: 'curl -X POST -H "Content-Type: application/json" -d \'{"url":"https://example.com/video.mp4"}\' /probe',
       'remove-letterbox': 'curl -X POST -F "file=@video.mp4" /remove-letterbox'
     }
   });
@@ -139,10 +141,37 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Get complete media metadata via ffprobe (supports URL)
+app.post('/probe', (req, res) => {
+  const timestamp = new Date().toISOString();
+  const { url } = req.body;
+
+  if (!url) {
+    console.log(`[${timestamp}] PROBE request failed: No URL provided`);
+    return res.status(400).json({ error: 'No URL provided. Please provide a "url" parameter in the request body.' });
+  }
+
+  console.log(`[${timestamp}] Processing PROBE request - URL: ${url}`);
+
+  // Use ffprobe directly to get complete metadata (equivalent to: ffprobe -v quiet -print_format json -show_format -show_streams)
+  ffmpeg.ffprobe(url, (err, metadata) => {
+    if (err) {
+      console.log(`[${timestamp}] PROBE request failed: ${err.message}`);
+      return res.status(500).json({ error: err.message });
+    }
+
+    const duration = metadata.format?.duration || 0;
+    const streams = metadata.streams?.length || 0;
+    console.log(`[${timestamp}] PROBE request completed - Duration: ${duration}s, Streams: ${streams}`);
+
+    res.json(metadata);
+  });
+});
+
 // Get media file information
 app.post('/info', upload.single('file'), (req, res) => {
   const timestamp = new Date().toISOString();
-  
+
   if (!req.file) {
     console.log(`[${timestamp}] INFO request failed: No file uploaded`);
     return res.status(400).json({ error: 'No file uploaded' });
@@ -153,16 +182,16 @@ app.post('/info', upload.single('file'), (req, res) => {
   ffmpeg.ffprobe(req.file.path, (err, metadata) => {
     // Clean up uploaded file
     fs.unlinkSync(req.file.path);
-    
+
     if (err) {
       console.log(`[${timestamp}] INFO request failed: ${err.message}`);
       return res.status(500).json({ error: err.message });
     }
-    
+
     const duration = metadata.format?.duration || 0;
     const streams = metadata.streams?.length || 0;
     console.log(`[${timestamp}] INFO request completed - Duration: ${duration}s, Streams: ${streams}`);
-    
+
     res.json(metadata);
   });
 });
