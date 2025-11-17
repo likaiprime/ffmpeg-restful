@@ -84,7 +84,7 @@ app.get('/', (req, res) => {
       'GET /health': 'Health check endpoint',
       'POST /convert': 'Convert media file (supports format parameter)',
       'POST /info': 'Get media file information',
-      'POST /probe': 'Get complete media metadata via ffprobe (supports URL parameter)',
+      'POST /probe': 'Get complete media metadata via ffprobe (supports URL parameter and thumbnail generation)',
       'POST /random-screenshot': 'Generate random screenshot from video (supports format: jpg, jpeg, png, webp, avif)',
       'POST /remove-letterbox': 'Remove black bars (letterbox/pillarbox) from video'
     },
@@ -93,6 +93,7 @@ app.get('/', (req, res) => {
       screenshot: 'curl -X POST -F "file=@video.mp4" -F "format=avif" /random-screenshot',
       info: 'curl -X POST -F "file=@video.mp4" /info',
       probe: 'curl -X POST -H "Content-Type: application/json" -d \'{"url":"https://example.com/video.mp4"}\' /probe',
+      'probe-thumbnail': 'curl -X POST -H "Content-Type: application/json" -d \'{"url":"https://example.com/video.mp4","thumbnail":true,"format":"jpg"}\' /probe',
       'remove-letterbox': 'curl -X POST -F "file=@video.mp4" /remove-letterbox'
     }
   });
@@ -141,17 +142,17 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Get complete media metadata via ffprobe (supports URL)
+// Get complete media metadata via ffprobe (supports URL and thumbnail generation)
 app.post('/probe', (req, res) => {
   const timestamp = new Date().toISOString();
-  const { url } = req.body;
+  const { url, thumbnail, format = 'jpg', time } = req.body;
 
   if (!url) {
     console.log(`[${timestamp}] PROBE request failed: No URL provided`);
     return res.status(400).json({ error: 'No URL provided. Please provide a "url" parameter in the request body.' });
   }
 
-  console.log(`[${timestamp}] Processing PROBE request - URL: ${url}`);
+  console.log(`[${timestamp}] Processing PROBE request - URL: ${url}${thumbnail ? ` (with thumbnail: ${format})` : ''}`);
 
   // Use ffprobe directly to get complete metadata (equivalent to: ffprobe -v quiet -print_format json -show_format -show_streams)
   ffmpeg.ffprobe(url, (err, metadata) => {
@@ -162,9 +163,89 @@ app.post('/probe', (req, res) => {
 
     const duration = metadata.format?.duration || 0;
     const streams = metadata.streams?.length || 0;
-    console.log(`[${timestamp}] PROBE request completed - Duration: ${duration}s, Streams: ${streams}`);
+    console.log(`[${timestamp}] PROBE metadata retrieved - Duration: ${duration}s, Streams: ${streams}`);
 
-    res.json(metadata);
+    // If thumbnail is requested, generate it
+    if (thumbnail) {
+      const supportedFormats = ['jpg', 'jpeg', 'png', 'webp', 'avif'];
+      const thumbnailFormat = format.toLowerCase();
+      
+      if (!supportedFormats.includes(thumbnailFormat)) {
+        console.log(`[${timestamp}] PROBE thumbnail request failed: Unsupported format ${format}`);
+        return res.status(400).json({ 
+          error: `Unsupported thumbnail format: ${format}. Supported formats: ${supportedFormats.join(', ')}`,
+          metadata: metadata
+        });
+      }
+
+      // Determine the time to extract thumbnail (default: 1 second or middle of video)
+      let thumbnailTime = time;
+      if (thumbnailTime === undefined || thumbnailTime === null) {
+        thumbnailTime = duration > 2 ? 1 : duration / 2;
+      }
+      thumbnailTime = Math.max(0.1, Math.min(thumbnailTime, duration - 0.1));
+
+      const outputFileName = `${Date.now()}-thumbnail.${thumbnailFormat}`;
+      const outputPath = path.join(outputDir, outputFileName);
+      
+      console.log(`[${timestamp}] Generating thumbnail at ${thumbnailTime.toFixed(2)}s from ${duration}s video`);
+
+      // Create ffmpeg command to extract thumbnail
+      let command = ffmpeg(url)
+        .seekInput(thumbnailTime)
+        .frames(1);
+
+      // Set format-specific options
+      if (thumbnailFormat === 'avif') {
+        command = command
+          .outputOptions([
+            '-c:v', 'libaom-av1',
+            '-crf', '30',
+            '-cpu-used', '8'
+          ]);
+      } else if (thumbnailFormat === 'webp') {
+        command = command
+          .outputOptions([
+            '-c:v', 'libwebp',
+            '-quality', '80'
+          ]);
+      }
+
+      // Extract frame at specified timestamp
+      command
+        .output(outputPath)
+        .on('start', (commandLine) => {
+          console.log(`[${timestamp}] FFmpeg thumbnail extraction started: ${commandLine}`);
+        })
+        .on('end', () => {
+          const outputStats = fs.statSync(outputPath);
+          console.log(`[${timestamp}] PROBE request completed - Thumbnail: ${outputStats.size} bytes (${thumbnailFormat})`);
+          
+          // Send the thumbnail file
+          res.download(outputPath, (err) => {
+            if (err) {
+              console.error(`[${timestamp}] Download error:`, err);
+            }
+            // Clean up output file after download
+            if (fs.existsSync(outputPath)) {
+              fs.unlinkSync(outputPath);
+            }
+          });
+        })
+        .on('error', (err) => {
+          console.log(`[${timestamp}] PROBE thumbnail generation failed: ${err.message}`);
+          // If thumbnail generation fails, still return metadata
+          res.status(500).json({ 
+            error: 'Failed to generate thumbnail: ' + err.message,
+            metadata: metadata
+          });
+        })
+        .run();
+    } else {
+      // Return metadata only
+      console.log(`[${timestamp}] PROBE request completed - Duration: ${duration}s, Streams: ${streams}`);
+      res.json(metadata);
+    }
   });
 });
 
